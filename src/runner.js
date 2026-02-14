@@ -40,20 +40,22 @@ Usage: npm run sync -- [options]
 Options:
   --min-trades <n>       Minimum trade count (default: 50)
   --min-volume <v>       Minimum volume in USD (default: 5000)
-  --min-winrate <r>      Minimum win rate 0-1 (default: 0.58)
+  --min-winrate <r>      Minimum win rate 0-1 (default: 0.8)
   --min-confidence <r>   Minimum confidence score (default: 0.1)
+  --require-profit       Only select profitable accounts (realizedPnl > 0)
   --top-n <n>            Number of top accounts to select (default: 100)
   --discover <n>         Discover N traders from trades (default: 100)
+  --window-days <n>      Time window in days (default: 90)
   --seed-file <path>     Load additional seed addresses from file
   --help, -h             Show this help message
 
 Examples:
   npm run sync
-  npm run sync -- --discover 500 --min-winrate 0.6
-  npm run sync -- --seed-file ./seed-addresses.txt
+  npm run sync -- --discover 500 --min-winrate 0.8 --require-profit
+  npm run sync -- --window-days 30 --min-volume 1000
 
 Environment variables (see .env.example):
-  MIN_TRADES, MIN_VOLUME_USD, MIN_WIN_RATE, MIN_CONFIDENCE, TOP_N, DISCOVER_TRADERS
+  MIN_TRADES, MIN_VOLUME_USD, MIN_WIN_RATE, MIN_CONFIDENCE, TOP_N, DISCOVER_TRADERS, WINDOW_DAYS
 `);
   process.exit(0);
 }
@@ -63,11 +65,13 @@ function parseArgs() {
   const config = {
     minTrades: parseInt(process.env.MIN_TRADES || '50'),
     minVolumeUsd: parseFloat(process.env.MIN_VOLUME_USD || '5000'),
-    minWinRate: parseFloat(process.env.MIN_WIN_RATE || '0.58'),
+    minWinRate: parseFloat(process.env.MIN_WIN_RATE || '0.8'),
     minConfidence: parseFloat(process.env.MIN_CONFIDENCE || '0.1'),
+    minPnl: parseFloat(process.env.MIN_PNL || '0'),
     topN: parseInt(process.env.TOP_N || '100'),
     seedFile: null,
-    discoverTraders: parseInt(process.env.DISCOVER_TRADERS || '100')
+    discoverTraders: parseInt(process.env.DISCOVER_TRADERS || '100'),
+    windowDays: parseInt(process.env.WINDOW_DAYS || '90')
   };
   
   for (let i = 0; i < args.length; i++) {
@@ -88,6 +92,9 @@ function parseArgs() {
       case '--min-confidence':
         config.minConfidence = parseFloat(args[++i]);
         break;
+      case '--min-pnl':
+        config.minPnl = parseFloat(args[++i]);
+        break;
       case '--top-n':
         config.topN = parseInt(args[++i]);
         break;
@@ -96,6 +103,9 @@ function parseArgs() {
         break;
       case '--discover':
         config.discoverTraders = parseInt(args[++i]);
+        break;
+      case '--window-days':
+        config.windowDays = parseInt(args[++i]);
         break;
     }
   }
@@ -141,7 +151,8 @@ async function main() {
   const collector = new PolymarketCollector({
     logger: console,
     maxRetries: 3,
-    retryDelayMs: 500
+    retryDelayMs: 500,
+    windowDays: config.windowDays
   });
   
   const scorer = new AccountScorer({
@@ -155,7 +166,9 @@ async function main() {
     minVolume: config.minVolumeUsd,
     minWinRate: config.minWinRate,
     minConfidence: config.minConfidence,
-    topN: config.topN
+    minPnl: config.minPnl,
+    topN: config.topN,
+    use90dMetrics: true
   });
   
   const storage = new Storage({
