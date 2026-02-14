@@ -46,16 +46,17 @@ Options:
   --top-n <n>            Number of top accounts to select (default: 100)
   --discover <n>         Discover N traders from trades (default: 100)
   --window-days <n>      Time window in days (default: 90)
+  --max-activity-pages <n> Max pages to fetch per address (default: 5)
   --seed-file <path>     Load additional seed addresses from file
   --help, -h             Show this help message
 
 Examples:
   npm run sync
   npm run sync -- --discover 500 --min-winrate 0.8 --require-profit
-  npm run sync -- --window-days 30 --min-volume 1000
+  npm run sync -- --window-days 30 --min-volume 1000 --max-activity-pages 3
 
 Environment variables (see .env.example):
-  MIN_TRADES, MIN_VOLUME_USD, MIN_WIN_RATE, MIN_CONFIDENCE, TOP_N, DISCOVER_TRADERS, WINDOW_DAYS
+  MIN_TRADES, MIN_VOLUME_USD, MIN_WIN_RATE, MIN_CONFIDENCE, TOP_N, DISCOVER_TRADERS, WINDOW_DAYS, MAX_ACTIVITY_PAGES
 `);
   process.exit(0);
 }
@@ -71,7 +72,8 @@ function parseArgs() {
     topN: parseInt(process.env.TOP_N || '100'),
     seedFile: null,
     discoverTraders: parseInt(process.env.DISCOVER_TRADERS || '100'),
-    windowDays: parseInt(process.env.WINDOW_DAYS || '90')
+    windowDays: parseInt(process.env.WINDOW_DAYS || '90'),
+    maxActivityPages: parseInt(process.env.MAX_ACTIVITY_PAGES || '5')
   };
   
   for (let i = 0; i < args.length; i++) {
@@ -106,6 +108,9 @@ function parseArgs() {
         break;
       case '--window-days':
         config.windowDays = parseInt(args[++i]);
+        break;
+      case '--max-activity-pages':
+        config.maxActivityPages = parseInt(args[++i]);
         break;
     }
   }
@@ -152,7 +157,8 @@ async function main() {
     logger: console,
     maxRetries: 3,
     retryDelayMs: 500,
-    windowDays: config.windowDays
+    windowDays: config.windowDays,
+    maxActivityPages: config.maxActivityPages
   });
   
   const scorer = new AccountScorer({
