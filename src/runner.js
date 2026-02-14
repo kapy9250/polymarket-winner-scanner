@@ -29,6 +29,35 @@ const { Storage } = require('./storage');
 const { close } = require('./db');
 require('dotenv').config();
 
+const VERSION = '1.0.0';
+
+function showHelp() {
+  console.log(`
+polymarket-winner-scanner v${VERSION}
+
+Usage: npm run sync -- [options]
+
+Options:
+  --min-trades <n>       Minimum trade count (default: 50)
+  --min-volume <v>       Minimum volume in USD (default: 5000)
+  --min-winrate <r>      Minimum win rate 0-1 (default: 0.58)
+  --min-confidence <r>   Minimum confidence score (default: 0.1)
+  --top-n <n>            Number of top accounts to select (default: 100)
+  --discover <n>         Discover N traders from trades (default: 100)
+  --seed-file <path>     Load additional seed addresses from file
+  --help, -h             Show this help message
+
+Examples:
+  npm run sync
+  npm run sync -- --discover 500 --min-winrate 0.6
+  npm run sync -- --seed-file ./seed-addresses.txt
+
+Environment variables (see .env.example):
+  MIN_TRADES, MIN_VOLUME_USD, MIN_WIN_RATE, MIN_CONFIDENCE, TOP_N, DISCOVER_TRADERS
+`);
+  process.exit(0);
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const config = {
@@ -43,6 +72,10 @@ function parseArgs() {
   
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
+      case '--help':
+      case '-h':
+        showHelp();
+        break;
       case '--min-trades':
         config.minTrades = parseInt(args[++i]);
         break;

@@ -1,0 +1,7 @@
+# Seed Addresses
+# One address per line, lines starting with # are ignored
+# Format: 0x...
+
+# Example active traders (replace with real addresses)
+# 0x1234567890abcdef1234567890abcdef12345678
+# 0xabcdef1234567890abcdef1234567890abcdef12
