@@ -173,26 +173,36 @@ class PolymarketCollector {
    * Fetch closed positions for a specific address (for strict win rate)
    * @param {string} address - Trader address (0x...)
    * @param {Object} options - Query options
+   * @param {number} options.windowDays - Filter to last N days (optional)
    * @returns {Array} - Closed position array
    */
   async fetchClosedPositions(address, options = {}) {
     const endpoint = 'closed-positions';
     const rateLimiter = this.rateLimiters.closedPositions;
     
+    // Calculate timestamp filter if windowDays is specified
+    let timeFilter = null;
+    if (options.windowDays) {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const sinceSeconds = nowSeconds - (options.windowDays * 24 * 60 * 60);
+      timeFilter = sinceSeconds;
+    }
+    
     await rateLimiter.acquire();
     
     const result = await this.retryHandler.executeWithRetry(async () => {
       const params = { user: address };
       if (options.limit) params.limit = options.limit;
+      if (timeFilter) params.after = timeFilter;
       
-      this.logger.info(`[Collector] Fetching closed positions for ${address}`);
+      this.logger.info(`[Collector] Fetching closed positions for ${address}${timeFilter ? ` (last ${options.windowDays}d)` : ''}`);
       
       const response = await axios.get(`${this.baseUrl}/${endpoint}`, { params });
       
       return response.data;
     }, `${endpoint}:${address}`);
     
-    this.logger.info(`[Collector] Got ${result.length} closed positions for ${address}`);
+    this.logger.info(`[Collector] Got ${result.length} closed positions for ${address}${timeFilter ? ` (filtered to last ${options.windowDays}d)` : ''}`);
     
     return result;
   }
@@ -200,12 +210,21 @@ class PolymarketCollector {
   /**
    * Fetch activity for a specific address
    * @param {string} address - Trader address (0x...)
-   * @param {Object} options - Query options (limit, before, after)
+   * @param {Object} options - Query options (limit, before, after, windowDays)
+   * @param {number} options.windowDays - Filter to last N days (optional)
    * @returns {Array} - Activity array
    */
   async fetchActivity(address, options = {}) {
     const endpoint = 'activity';
     const rateLimiter = this.rateLimiters.activity;
+    
+    // Calculate timestamp filter if windowDays is specified
+    let timeFilter = null;
+    if (options.windowDays) {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const sinceSeconds = nowSeconds - (options.windowDays * 24 * 60 * 60);
+      timeFilter = sinceSeconds;
+    }
     
     await rateLimiter.acquire();
     
@@ -214,15 +233,16 @@ class PolymarketCollector {
       if (options.limit) params.limit = options.limit;
       if (options.before) params.before = options.before;
       if (options.after) params.after = options.after;
+      if (timeFilter) params.after = timeFilter;
       
-      this.logger.info(`[Collector] Fetching activity for ${address}`);
+      this.logger.info(`[Collector] Fetching activity for ${address}${timeFilter ? ` (last ${options.windowDays}d)` : ''}`);
       
       const response = await axios.get(`${this.baseUrl}/${endpoint}`, { params });
       
       return response.data;
     }, `${endpoint}:${address}`);
     
-    this.logger.info(`[Collector] Got ${result.length} activity records for ${address}`);
+    this.logger.info(`[Collector] Got ${result.length} activity records for ${address}${timeFilter ? ` (filtered to last ${options.windowDays}d)` : ''}`);
     
     return result;
   }
@@ -264,16 +284,18 @@ class PolymarketCollector {
    * Fetch complete metrics for an address
    * Uses Promise.allSettled to support partial success
    * @param {string} address - Trader address
+   * @param {Object} options - Options including windowDays for time filtering
    * @returns {Object} - Complete metrics (may have partial data)
    */
-  async fetchAccountMetrics(address) {
-    this.logger.info(`[Collector] Fetching complete metrics for ${address}`);
+  async fetchAccountMetrics(address, options = {}) {
+    const windowDays = options.windowDays || null;
+    this.logger.info(`[Collector] Fetching complete metrics for ${address}${windowDays ? ` (last ${windowDays}d)` : ''}`);
     
     // Use Promise.allSettled to support partial success
     const results = await Promise.allSettled([
       this.fetchPositions(address),
-      this.fetchClosedPositions(address),
-      this.fetchActivity(address, { limit: 100 })
+      this.fetchClosedPositions(address, { windowDays }),
+      this.fetchActivity(address, { limit: 100, windowDays })
     ]);
     
     // Extract results, handling partial failures

@@ -14,6 +14,7 @@ class AccountSelector {
    * @param {number} options.minVolume - Minimum volume in USD
    * @param {number} options.minWinRate - Minimum win rate (0-1)
    * @param {number} options.minConfidence - Minimum confidence score (0-1)
+   * @param {number} options.minPnl - Minimum realized PnL (default: 0, i.e., profitable only)
    * @param {number} options.topN - Number of top accounts to select
    */
   constructor(options = {}) {
@@ -21,6 +22,7 @@ class AccountSelector {
     this.minVolume = options.minVolume ?? 100;
     this.minWinRate = options.minWinRate ?? 0.5;
     this.minConfidence = options.minConfidence ?? 0.1;
+    this.minPnl = options.minPnl ?? 0;  // Default: profitable only
     this.topN = options.topN ?? 100;
   }
 
@@ -39,11 +41,15 @@ class AccountSelector {
       // This prevents accounts with no win rate data from passing when minWinRate > 0
       const passesWinRate = winRate !== null && winRate >= this.minWinRate;
       
+      // PnL filter: require profitable (or at least minPnl threshold)
+      const passesPnl = (account.realizedPnl ?? 0) >= this.minPnl;
+      
       return (
         account.totalTrades >= this.minTrades &&
         account.totalVolumeUsd >= this.minVolume &&
         passesWinRate &&
-        account.confidenceScore >= this.minConfidence
+        account.confidenceScore >= this.minConfidence &&
+        passesPnl
       );
     });
 
@@ -73,6 +79,7 @@ class AccountSelector {
           minVolume: this.minVolume,
           minWinRate: this.minWinRate,
           minConfidence: this.minConfidence,
+          minPnl: this.minPnl,
           topN: this.topN
         }
       }

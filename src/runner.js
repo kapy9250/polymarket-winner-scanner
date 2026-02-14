@@ -65,9 +65,11 @@ function parseArgs() {
     minVolumeUsd: parseFloat(process.env.MIN_VOLUME_USD || '5000'),
     minWinRate: parseFloat(process.env.MIN_WIN_RATE || '0.58'),
     minConfidence: parseFloat(process.env.MIN_CONFIDENCE || '0.1'),
+    minPnl: parseFloat(process.env.MIN_PNL || '0'),
     topN: parseInt(process.env.TOP_N || '100'),
     seedFile: null,
-    discoverTraders: parseInt(process.env.DISCOVER_TRADERS || '100')
+    discoverTraders: parseInt(process.env.DISCOVER_TRADERS || '100'),
+    windowDays: parseInt(process.env.WINDOW_DAYS || '0') || null
   };
   
   for (let i = 0; i < args.length; i++) {
@@ -96,6 +98,12 @@ function parseArgs() {
         break;
       case '--discover':
         config.discoverTraders = parseInt(args[++i]);
+        break;
+      case '--window-days':
+        config.windowDays = parseInt(args[++i]);
+        break;
+      case '--min-pnl':
+        config.minPnl = parseFloat(args[++i]);
         break;
     }
   }
@@ -155,6 +163,7 @@ async function main() {
     minVolume: config.minVolumeUsd,
     minWinRate: config.minWinRate,
     minConfidence: config.minConfidence,
+    minPnl: config.minPnl,
     topN: config.topN
   });
   
@@ -184,12 +193,13 @@ async function main() {
     }
     
     // Step 4: Collect metrics for each address
-    console.log('[Runner] Collecting metrics for addresses...');
+    const windowDays = config.windowDays;
+    console.log(`[Runner] Collecting metrics for addresses${windowDays ? ` (last ${windowDays} days)` : ''}...`);
     const metricsResults = [];
     
     for (const address of addresses) {
       try {
-        const metrics = await collector.fetchAccountMetrics(address);
+        const metrics = await collector.fetchAccountMetrics(address, { windowDays });
         metricsResults.push(metrics);
         
         if (metrics._partialSuccess) {
