@@ -5,9 +5,12 @@
   "main": "src/runner.js",
   "scripts": {
     "start": "node src/runner.js",
+    "sync": "node src/runner.js",
     "db:migrate": "node scripts/migrate.js",
     "db:reset": "node scripts/migrate.js --reset",
-    "collector:fetch": "node src/collector.js"
+    "test:collector": "node scripts/test-collector.js",
+    "test:scorer": "node scripts/test-scorer-selector.js",
+    "test:storage": "node scripts/test-storage.js"
   },
   "dependencies": {
     "pg": "^8.11.3",

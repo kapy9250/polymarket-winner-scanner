@@ -35,10 +35,14 @@ class AccountSelector {
       // Use strict_win_rate if available, otherwise proxy_win_rate
       const winRate = account.strictWinRate ?? account.proxyWinRate;
       
+      // Fix: If both win rates are null, the account does not pass the win rate threshold
+      // This prevents accounts with no win rate data from passing when minWinRate > 0
+      const passesWinRate = winRate !== null && winRate >= this.minWinRate;
+      
       return (
         account.totalTrades >= this.minTrades &&
         account.totalVolumeUsd >= this.minVolume &&
-        (winRate ?? 0) >= this.minWinRate &&
+        passesWinRate &&
         account.confidenceScore >= this.minConfidence
       );
     });
