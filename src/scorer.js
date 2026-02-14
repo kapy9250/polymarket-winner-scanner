@@ -27,6 +27,16 @@ class AccountScorer {
    */
   score(metrics) {
     const {
+      // 90-day metrics (preferred)
+      winRate90d,
+      volume90d,
+      trades90d,
+      realizedPnl90d,
+      winCount90d,
+      lossCount90d,
+      closedPositions90d,
+      
+      // Original metrics (fallback)
       strictWinRate,
       proxyWinRate,
       totalVolumeUsd,
@@ -35,14 +45,23 @@ class AccountScorer {
       realizedPnl,
       winCount,
       lossCount,
-      closedPositions
+      closedPositions,
+      
+      // Window info
+      windowDays
     } = metrics;
 
-    // Use strict_win_rate if available, fallback to proxy
-    const effectiveWinRate = strictWinRate ?? proxyWinRate ?? 0;
+    // Use 90-day metrics if available, otherwise fallback to original
+    const effectiveWinRate = winRate90d ?? strictWinRate ?? proxyWinRate ?? 0;
+    const effectiveVolume = volume90d ?? totalVolumeUsd ?? 0;
+    const effectiveTrades = trades90d ?? totalTrades ?? 0;
+    const effectivePnl = realizedPnl90d ?? realizedPnl ?? 0;
+    const effectiveWinCount = winCount90d ?? winCount ?? 0;
+    const effectiveLossCount = lossCount90d ?? lossCount ?? 0;
+    const effectiveClosedPositions = closedPositions90d ?? closedPositions ?? 0;
 
     // Normalize volume (log scale to handle wide range)
-    const normalizedVolume = this.normalizeVolume(totalVolumeUsd);
+    const normalizedVolume = this.normalizeVolume(effectiveVolume);
 
     // Calculate composite score
     // Score = a * win_rate + b * log_volume + c * confidence
@@ -58,24 +77,33 @@ class AccountScorer {
       // Identifiers
       address: metrics.address,
       
-      // Key metrics
+      // 90-day metrics (NEW)
+      winRate90d: winRate90d ?? null,
+      volume90d: volume90d ?? 0,
+      trades90d: trades90d ?? 0,
+      realizedPnl90d: realizedPnl90d ?? 0,
+      
+      // Original metrics (backward compatible)
       strictWinRate: strictWinRate ?? null,
       proxyWinRate: proxyWinRate ?? null,
-      totalTrades: totalTrades ?? 0,
-      totalVolumeUsd: totalVolumeUsd ?? 0,
-      realizedPnl: realizedPnl ?? 0,
+      totalTrades: effectiveTrades,
+      totalVolumeUsd: effectiveVolume,
+      realizedPnl: effectivePnl,
       confidenceScore: confidenceScore ?? 0,
       
       // Win/Loss counts
-      winCount: winCount ?? 0,
-      lossCount: lossCount ?? 0,
-      closedPositions: closedPositions ?? 0,
+      winCount: effectiveWinCount,
+      lossCount: effectiveLossCount,
+      closedPositions: effectiveClosedPositions,
       
       // Score
       compositeScore: Math.round(compositeScore * 10000) / 10000,
       
       // Tags
       reasonTags,
+      
+      // Window info
+      windowDays: windowDays ?? 90,
       
       // Metadata
       scoreBreakdown: {

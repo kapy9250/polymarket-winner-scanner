@@ -2,9 +2,9 @@
  * Selector Module - Filter and select top accounts based on criteria
  * 
  * Responsibilities:
- * - Apply configurable thresholds (min_trades, min_volume, min_winrate)
+ * - Apply configurable thresholds (min_trades, min_volume, min_winrate, min_pnl)
+ * - Support 90-day window metrics filtering
  * - Select top N accounts by composite score
- * - Support dry-run mode for testing
  */
 
 class AccountSelector {
@@ -14,14 +14,18 @@ class AccountSelector {
    * @param {number} options.minVolume - Minimum volume in USD
    * @param {number} options.minWinRate - Minimum win rate (0-1)
    * @param {number} options.minConfidence - Minimum confidence score (0-1)
+   * @param {number} options.minPnl - Minimum realized PnL (default: 0)
    * @param {number} options.topN - Number of top accounts to select
+   * @param {boolean} options.use90dMetrics - Use 90-day metrics for filtering
    */
   constructor(options = {}) {
     this.minTrades = options.minTrades ?? 10;
     this.minVolume = options.minVolume ?? 100;
-    this.minWinRate = options.minWinRate ?? 0.5;
+    this.minWinRate = options.minWinRate ?? 0.8;
     this.minConfidence = options.minConfidence ?? 0.1;
+    this.minPnl = options.minPnl ?? 0;
     this.topN = options.topN ?? 100;
+    this.use90dMetrics = options.use90dMetrics ?? false;
   }
 
   /**
@@ -32,18 +36,35 @@ class AccountSelector {
   select(scoredAccounts) {
     // Phase 1: Apply minimum thresholds
     const filtered = scoredAccounts.filter(account => {
-      // Use strict_win_rate if available, otherwise proxy_win_rate
-      const winRate = account.strictWinRate ?? account.proxyWinRate;
+      // Use 90-day metrics if enabled and available
+      const winRate = this.use90dMetrics 
+        ? (account.winRate90d ?? account.strictWinRate ?? account.proxyWinRate)
+        : (account.strictWinRate ?? account.proxyWinRate);
       
-      // Fix: If both win rates are null, the account does not pass the win rate threshold
-      // This prevents accounts with no win rate data from passing when minWinRate > 0
+      const trades = this.use90dMetrics 
+        ? (account.trades90d ?? account.totalTrades)
+        : account.totalTrades;
+      
+      const volume = this.use90dMetrics 
+        ? (account.volume90d ?? account.totalVolumeUsd)
+        : account.totalVolumeUsd;
+      
+      const pnl = this.use90dMetrics 
+        ? (account.realizedPnl90d ?? account.realizedPnl)
+        : account.realizedPnl;
+      
+      // Win rate check: must not be null
       const passesWinRate = winRate !== null && winRate >= this.minWinRate;
       
+      // PnL check: must be >= minPnl (default 0, meaning profitable)
+      const passesPnl = pnl !== undefined && pnl >= this.minPnl;
+      
       return (
-        account.totalTrades >= this.minTrades &&
-        account.totalVolumeUsd >= this.minVolume &&
+        trades >= this.minTrades &&
+        volume >= this.minVolume &&
         passesWinRate &&
-        account.confidenceScore >= this.minConfidence
+        account.confidenceScore >= this.minConfidence &&
+        passesPnl
       );
     });
 
@@ -73,7 +94,9 @@ class AccountSelector {
           minVolume: this.minVolume,
           minWinRate: this.minWinRate,
           minConfidence: this.minConfidence,
-          topN: this.topN
+          minPnl: this.minPnl,
+          topN: this.topN,
+          use90dMetrics: this.use90dMetrics
         }
       }
     };
