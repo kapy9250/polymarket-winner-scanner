@@ -132,30 +132,58 @@ async function testStorage() {
 async function testNullWinRateHandling() {
   console.log('\n[TEST 6] Null Win Rate Handling...');
   try {
-    const selector = new AccountSelector({ minWinRate: 0.5 });
+    // Test 1: Original fields (use90dMetrics = false)
+    const selectorOriginal = new AccountSelector({ minWinRate: 0.5, use90dMetrics: false });
     
     const accountsWithNullWinRate = [
       { address: '0x1', strictWinRate: null, proxyWinRate: null, totalVolumeUsd: 1000, confidenceScore: 0.5, totalTrades: 50, compositeScore: 0.5 },
       { address: '0x2', strictWinRate: 0.8, proxyWinRate: 0.8, totalVolumeUsd: 1000, confidenceScore: 0.5, totalTrades: 50, compositeScore: 0.7 }
     ];
     
-    const result = selector.select(accountsWithNullWinRate);
+    const resultOriginal = selectorOriginal.select(accountsWithNullWinRate);
     
     // Account with null win rate should NOT pass
-    const nullAccountSelected = result.selected.find(a => a.address === '0x1');
+    const nullAccountSelected = resultOriginal.selected.find(a => a.address === '0x1');
     if (nullAccountSelected) {
-      console.error('  ❌ Account with null win rate incorrectly selected');
+      console.error('  ❌ [Original] Account with null win rate incorrectly selected');
       return false;
     }
     
     // Account with valid win rate should pass
-    const validAccountSelected = result.selected.find(a => a.address === '0x2');
+    const validAccountSelected = resultOriginal.selected.find(a => a.address === '0x2');
     if (!validAccountSelected) {
-      console.error('  ❌ Account with valid win rate not selected');
+      console.error('  ❌ [Original] Account with valid win rate not selected');
       return false;
     }
     
-    console.log('  ✅ Null win rate handling correct: account with null win rate rejected');
+    console.log('  ✅ [Original] Null win rate handling correct');
+    
+    // Test 2: 90d metrics (use90dMetrics = true)
+    const selector90d = new AccountSelector({ minWinRate: 0.5, use90dMetrics: true });
+    
+    const accountsWithNullWinRate90d = [
+      { address: '0x1', winRate90d: null, strictWinRate: null, proxyWinRate: null, trades90d: 50, totalTrades: 50, volume90d: 1000, totalVolumeUsd: 1000, confidenceScore: 0.5, compositeScore: 0.5 },
+      { address: '0x2', winRate90d: 0.8, strictWinRate: 0.8, proxyWinRate: 0.8, trades90d: 50, totalTrades: 50, volume90d: 1000, totalVolumeUsd: 1000, confidenceScore: 0.5, compositeScore: 0.7 }
+    ];
+    
+    const result90d = selector90d.select(accountsWithNullWinRate90d);
+    
+    // Account with null winRate90d should NOT pass
+    const nullAccountSelected90d = result90d.selected.find(a => a.address === '0x1');
+    if (nullAccountSelected90d) {
+      console.error('  ❌ [90d] Account with null winRate90d incorrectly selected');
+      return false;
+    }
+    
+    // Account with valid winRate90d should pass
+    const validAccountSelected90d = result90d.selected.find(a => a.address === '0x2');
+    if (!validAccountSelected90d) {
+      console.error('  ❌ [90d] Account with valid winRate90d not selected');
+      return false;
+    }
+    
+    console.log('  ✅ [90d] Null win rate handling correct');
+    console.log('  ✅ All null win rate tests passed');
     return true;
   } catch (error) {
     console.error('  ❌ Null win rate test failed:', error.message);
