@@ -6,12 +6,14 @@
   "scripts": {
     "start": "node src/runner.js",
     "sync": "node src/runner.js",
+    "sync:report": "node src/runner.js && node scripts/generate-report.js",
     "report": "node scripts/generate-report.js",
     "db:migrate": "node scripts/migrate.js",
     "db:reset": "node scripts/migrate.js --reset",
     "test:collector": "node scripts/test-collector.js",
     "test:scorer": "node scripts/test-scorer-selector.js",
-    "test:storage": "node scripts/test-storage.js"
+    "test:storage": "node scripts/test-storage.js",
+    "test:integration": "node scripts/test-integration.js"
   },
   "dependencies": {
     "pg": "^8.11.3",
