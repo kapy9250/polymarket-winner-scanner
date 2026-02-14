@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/runner.js",
     "sync": "node src/runner.js",
+    "report": "node scripts/generate-report.js",
     "db:migrate": "node scripts/migrate.js",
     "db:reset": "node scripts/migrate.js --reset",
     "test:collector": "node scripts/test-collector.js",
