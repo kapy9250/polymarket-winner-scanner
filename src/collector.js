@@ -96,6 +96,9 @@ class PolymarketCollector {
   constructor(options = {}) {
     this.baseUrl = options.baseUrl || 'https://data-api.polymarket.com';
     this.windowDays = options.windowDays || 90; // Default 90 days
+    this.maxActivityPages = options.maxActivityPages || 5; // Default 5 pages = 2500 records
+    this.minTradesForStop = options.minTradesForStop || 200; // Early stop: trades >= 200
+    this.minVolumeForStop = options.minVolumeForStop || 10000; // Early stop: volume >= $10,000
     this.rateLimiters = {
       trades: new RateLimiter(RATE_LIMITS.trades.maxRequests, RATE_LIMITS.trades.windowMs),
       positions: new RateLimiter(RATE_LIMITS.positions.maxRequests, RATE_LIMITS.positions.windowMs),
@@ -254,6 +257,7 @@ class PolymarketCollector {
 
   /**
    * Fetch all activity records within time window (with pagination)
+   * Includes hard limit and early stop conditions for efficiency
    * @param {string} address - Trader address
    * @param {number} afterTimestamp - Unix timestamp for window start
    * @param {number} batchSize - Number of records per request
@@ -263,11 +267,12 @@ class PolymarketCollector {
     const allActivity = [];
     let before = null;
     let iteration = 0;
-    const maxIterations = 20; // Safety limit
+    let totalVolume = 0;
+    let totalTrades = 0;
     
-    this.logger.info(`[Collector] Fetching all activity for ${address} (after: ${afterTimestamp})`);
+    this.logger.info(`[Collector] Fetching activity for ${address} (after: ${afterTimestamp}, maxPages: ${this.maxActivityPages})`);
     
-    while (iteration < maxIterations) {
+    while (iteration < this.maxActivityPages) {
       await this.rateLimiters.activity.acquire();
       
       const result = await this.retryHandler.executeWithRetry(async () => {
@@ -286,6 +291,20 @@ class PolymarketCollector {
       
       allActivity.push(...result);
       
+      // Accumulate metrics for early stop
+      totalTrades += result.length;
+      totalVolume += result.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
+      
+      // Early stop conditions
+      if (totalTrades >= this.minTradesForStop) {
+        this.logger.info(`[Collector] Early stop: trades=${totalTrades} >= ${this.minTradesForStop}`);
+        break;
+      }
+      if (totalVolume >= this.minVolumeForStop) {
+        this.logger.info(`[Collector] Early stop: volume=$${totalVolume.toFixed(2)} >= $${this.minVolumeForStop}`);
+        break;
+      }
+      
       // Get the earliest timestamp from results for next page
       const timestamps = result.map(a => a.timestamp).filter(t => t);
       if (timestamps.length === 0) break;
@@ -296,7 +315,7 @@ class PolymarketCollector {
       before = earliestTimestamp;
       iteration++;
       
-      this.logger.info(`[Collector] Activity page ${iteration}: ${result.length} records, total: ${allActivity.length}`);
+      this.logger.info(`[Collector] Activity page ${iteration}: ${result.length} records, total: ${allActivity.length}, volume: $${totalVolume.toFixed(2)}`);
     }
     
     // Filter by window (in case API returns slightly out-of-window records)
