@@ -262,20 +262,41 @@ class PolymarketCollector {
 
   /**
    * Fetch complete metrics for an address
+   * Uses Promise.allSettled to support partial success
    * @param {string} address - Trader address
-   * @returns {Object} - Complete metrics
+   * @returns {Object} - Complete metrics (may have partial data)
    */
   async fetchAccountMetrics(address) {
     this.logger.info(`[Collector] Fetching complete metrics for ${address}`);
     
-    const [positions, closedPositions, activity] = await Promise.all([
+    // Use Promise.allSettled to support partial success
+    const results = await Promise.allSettled([
       this.fetchPositions(address),
       this.fetchClosedPositions(address),
       this.fetchActivity(address, { limit: 100 })
     ]);
     
+    // Extract results, handling partial failures
+    const positions = results[0].status === 'fulfilled' ? results[0].value : [];
+    const closedPositions = results[1].status === 'fulfilled' ? results[1].value : [];
+    const activity = results[2].status === 'fulfilled' ? results[2].value : [];
+    
+    // Log any failures
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        const endpoints = ['positions', 'closedPositions', 'activity'];
+        this.logger.warn(`[Collector] ${endpoints[i]} failed for ${address}: ${r.reason.message}`);
+      }
+    });
+    
     // Calculate metrics
     const metrics = this.calculateMetrics(address, positions, closedPositions, activity);
+    
+    // Add partial success flag
+    metrics._partialSuccess = results.some(r => r.status === 'rejected');
+    metrics._failedEndpoints = results
+      .map((r, i) => r.status === 'rejected' ? ['positions', 'closedPositions', 'activity'][i] : null)
+      .filter(Boolean);
     
     this.logger.info(`[Collector] Metrics calculated for ${address}: winRate=${metrics.strictWinRate}, volume=${metrics.totalVolumeUsd}`);
     
@@ -284,12 +305,19 @@ class PolymarketCollector {
 
   /**
    * Calculate account metrics from raw data
+   * 
+   * Win rate calculation rules (per data-source-report):
+   * - realizedPnl > 0 = WIN
+   * - realizedPnl < 0 = LOSS  
+   * - realizedPnl == 0 = NEUTRAL (not counted in numerator or denominator)
    */
   calculateMetrics(address, positions, closedPositions, activity) {
     // From closed positions - strict win rate
+    // Exclude neutral (realizedPnl == 0) from calculation
     const wins = closedPositions.filter(p => p.realizedPnl > 0).length;
     const losses = closedPositions.filter(p => p.realizedPnl < 0).length;
-    const totalClosed = closedPositions.length;
+    const neutral = closedPositions.filter(p => p.realizedPnl === 0).length;
+    const totalClosed = wins + losses;  // Exclude neutral from denominator
     
     const strictWinRate = totalClosed > 0 ? wins / totalClosed : null;
     const confidenceScore = positions.length > 0 ? totalClosed / positions.length : 0;
