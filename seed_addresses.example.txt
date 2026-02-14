@@ -1,0 +1,16 @@
+# Sample seed addresses for Polymarket Winner Scanner
+# Add one Ethereum address per line (0x...)
+# These addresses will be used as starting points for scanning
+
+# Example addresses (replace with real addresses)
+0xd0d6053c3c37e727402d84c14069780d360993aa
+0xcbbb3e23d4d519891673f8bb023b8736fb4ed63e
+0x5924ca480d8b08cd5f3e5811fa378c4082475af6
+0x7d9113a6ea6cb01071a8a82656d888a483413f1a
+0x715aa266e1d4bf28c452cc8e9250788a7c91774a
+
+# To use this file:
+# 1. Copy to seed_addresses.txt
+# 2. Add real Polymarket trader addresses
+# 3. Run: npm run sync -- --seed-file ./seed_addresses.txt
+# 4. Or add addresses to database: INSERT INTO seed_addresses (address, source) VALUES ('0x...', 'manual')
