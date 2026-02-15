@@ -219,16 +219,27 @@ async function main() {
       }
     }
     
-    // Phase 1 filter: winRate >= minWinRate AND realizedPnl >= minPnl
+    // Phase 1 filter: winRate >= minWinRate AND totalPnl >= minPnl
+    // totalPnl = realizedPnl + cashPnl (includes unrealized losses from open positions)
+    // Also exclude accounts with inconsistency warning (realized positive but cash highly negative)
     const phase1PassList = phase1Results.filter(r => {
       const m = r.metrics;
       const winRate = m.strictWinRate ?? 0;
-      const passes = winRate >= config.minWinRate && m.realizedPnl >= config.minPnl;
+      // Use totalPnl instead of just realizedPnl to exclude accounts with unrealized losses
+      const totalPnl = m.totalPnl ?? m.realizedPnl ?? 0;
+      
+      // Exclude accounts with inconsistency warning (fake profit)
+      if (m._inconsistencyWarning) {
+        console.log(`[Runner] Phase1: ${r.address} rejected due to inconsistency warning (realizedPnl=${m.realizedPnl?.toFixed(2)}, cashPnl=${m.cashPnl?.toFixed(2)})`);
+        return false;
+      }
+      
+      const passes = winRate >= config.minWinRate && totalPnl >= config.minPnl;
       if (passes) phase1Passed++;
       return passes;
     });
     
-    console.log(`[Runner] Phase1: ${phase1Passed}/${phase1Candidates} passed (winRate>=${config.minWinRate}, pnl>=${config.minPnl})`);
+    console.log(`[Runner] Phase1: ${phase1Passed}/${phase1Candidates} passed (winRate>=${config.minWinRate}, totalPnl>=${config.minPnl})`);
     
     // Phase 2: Enrich with activity (only for Phase1 passed)
     console.log(`[Runner] Phase2: Enriching ${phase1PassList.length} candidates with activity...`);

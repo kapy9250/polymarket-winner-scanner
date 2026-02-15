@@ -145,11 +145,17 @@ class PolymarketCollector {
    * Fetch positions for a specific address
    * @param {string} address - Trader address (0x...)
    * @param {Object} options - Query options
+   * @param {boolean} options.fetchAll - Fetch all positions with pagination
    * @returns {Array} - Position array
    */
   async fetchPositions(address, options = {}) {
     const endpoint = 'positions';
     const rateLimiter = this.rateLimiters.positions;
+    
+    // If fetchAll is true, paginate to get all records
+    if (options.fetchAll) {
+      return await this._fetchAllPositions(address, options.limit);
+    }
     
     await rateLimiter.acquire();
     
@@ -170,15 +176,65 @@ class PolymarketCollector {
   }
 
   /**
+   * Fetch all positions with pagination
+   * @param {string} address - Trader address
+   * @param {number} batchSize - Number of records per request
+   * @returns {Array} - All positions
+   */
+  async _fetchAllPositions(address, batchSize = 500) {
+    const allPositions = [];
+    let cursor = '';
+    let iteration = 0;
+    const maxIterations = 10; // Safety limit
+    
+    this.logger.info(`[Collector] Fetching all positions for ${address}`);
+    
+    while (iteration < maxIterations) {
+      await this.rateLimiters.positions.acquire();
+      
+      const result = await this.retryHandler.executeWithRetry(async () => {
+        const params = { user: address, limit: batchSize };
+        if (cursor) params.cursor = cursor;
+        
+        const response = await axios.get(`${this.baseUrl}/positions`, { params });
+        return response.data;
+      }, `positions:${address}:page${iteration}`);
+      
+      if (!result || result.length === 0) break;
+      
+      allPositions.push(...result);
+      
+      // Check if there's more data (cursor-based pagination)
+      const nextCursor = result.next_cursor || result.cursor;
+      if (!nextCursor || result.length < batchSize) break;
+      
+      cursor = nextCursor;
+      iteration++;
+      
+      this.logger.info(`[Collector] Positions page ${iteration}: ${result.length} records, total: ${allPositions.length}`);
+    }
+    
+    this.logger.info(`[Collector] Total positions for ${address}: ${allPositions.length}`);
+    
+    return allPositions;
+  }
+
+  /**
    * Fetch closed positions for a specific address (for strict win rate)
    * @param {string} address - Trader address (0x...)
    * @param {Object} options - Query options
    * @param {number} options.windowDays - Filter to last N days (optional)
+   * @param {boolean} options.fetchAll - Fetch all positions with pagination
    * @returns {Array} - Closed position array
    */
   async fetchClosedPositions(address, options = {}) {
     const endpoint = 'closed-positions';
     const rateLimiter = this.rateLimiters.closedPositions;
+    
+    // If fetchAll is true, paginate to get all records
+    if (options.fetchAll) {
+      return await this._fetchAllClosedPositions(address, options);
+    }
     
     // Calculate timestamp filter if windowDays is specified
     let timeFilter = null;
@@ -205,6 +261,67 @@ class PolymarketCollector {
     this.logger.info(`[Collector] Got ${result.length} closed positions for ${address}${timeFilter ? ` (filtered to last ${options.windowDays}d)` : ''}`);
     
     return result;
+  }
+
+  /**
+   * Fetch all closed positions with pagination and optional time filter
+   * @param {string} address - Trader address
+   * @param {Object} options - Options including windowDays
+   * @returns {Array} - All closed positions (filtered by time if specified)
+   */
+  async _fetchAllClosedPositions(address, options = {}) {
+    const allClosedPositions = [];
+    let cursor = '';
+    let iteration = 0;
+    const maxIterations = 20; // Safety limit
+    const batchSize = 500;
+    
+    // Calculate time filter
+    let timeFilter = null;
+    if (options.windowDays) {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      timeFilter = nowSeconds - (options.windowDays * 24 * 60 * 60);
+    }
+    
+    this.logger.info(`[Collector] Fetching all closed positions for ${address}${timeFilter ? ` (last ${options.windowDays}d)` : ''}`);
+    
+    while (iteration < maxIterations) {
+      await this.rateLimiters.closedPositions.acquire();
+      
+      const result = await this.retryHandler.executeWithRetry(async () => {
+        const params = { user: address, limit: batchSize };
+        if (cursor) params.cursor = cursor;
+        // Note: API may not support both cursor and after, so we filter client-side
+        
+        const response = await axios.get(`${this.baseUrl}/closed-positions`, { params });
+        return response.data;
+      }, `closed-positions:${address}:page${iteration}`);
+      
+      if (!result || result.length === 0) break;
+      
+      // Client-side time filtering
+      const filtered = timeFilter 
+        ? result.filter(p => {
+            const ts = p.resolvedAt || p.timestamp || 0;
+            return ts >= timeFilter;
+          })
+        : result;
+      
+      allClosedPositions.push(...filtered);
+      
+      // Check if there's more data
+      const nextCursor = result.next_cursor || result.cursor;
+      if (!nextCursor || result.length < batchSize) break;
+      
+      cursor = nextCursor;
+      iteration++;
+      
+      this.logger.info(`[Collector] Closed positions page ${iteration}: ${result.length} records, total: ${allClosedPositions.length}`);
+    }
+    
+    this.logger.info(`[Collector] Total closed positions for ${address}: ${allClosedPositions.length}`);
+    
+    return allClosedPositions;
   }
 
   /**
@@ -292,9 +409,14 @@ class PolymarketCollector {
     this.logger.info(`[Collector] Phase1 lightweight metrics for ${address} (last ${windowDays}d)`);
     
     try {
-      const closedPositions = await this.fetchClosedPositions(address, { windowDays });
+      // Fetch both closed positions AND positions to detect unrealized losses
+      // Use fetchAll to ensure we get all data (not just first page)
+      const [closedPositions, positions] = await Promise.all([
+        this.fetchClosedPositions(address, { windowDays, fetchAll: true }),
+        this.fetchPositions(address, { fetchAll: true })
+      ]);
       
-      // Calculate win rate and PnL from closed positions only
+      // Calculate win rate and PnL from closed positions
       const wins = closedPositions.filter(p => p.realizedPnl > 0).length;
       const losses = closedPositions.filter(p => p.realizedPnl < 0).length;
       const totalClosed = wins + losses;
@@ -302,17 +424,28 @@ class PolymarketCollector {
       const strictWinRate = totalClosed > 0 ? wins / totalClosed : null;
       const realizedPnl = closedPositions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
       
-      this.logger.info(`[Collector] Phase1 complete for ${address}: winRate=${strictWinRate}, pnl=${realizedPnl}`);
+      // Calculate cashPnl from open positions (unrealized PnL)
+      const cashPnl = positions.reduce((sum, p) => sum + (p.cashPnl || 0), 0);
+      const totalPnl = realizedPnl + cashPnl;
+      
+      // Consistency warning: realized positive but cash highly negative
+      const inconsistencyWarning = realizedPnl > 0 && cashPnl < -realizedPnl;
+      
+      this.logger.info(`[Collector] Phase1 complete for ${address}: winRate=${strictWinRate}, realizedPnl=${realizedPnl.toFixed(2)}, cashPnl=${cashPnl.toFixed(2)}, totalPnl=${totalPnl.toFixed(2)}${inconsistencyWarning ? ' [WARNING: inconsistent]' : ''}`);
       
       return {
         address,
         strictWinRate,
         realizedPnl,
+        cashPnl,
+        totalPnl,
+        positionsCount: positions.length,
         confidenceScore: 0,  // Will be updated in phase2
         totalTrades: totalClosed,
         totalVolumeUsd: 0,   // Will be updated in phase2
         _phase: 1,
-        _closedPositionsCount: closedPositions.length
+        _closedPositionsCount: closedPositions.length,
+        _inconsistencyWarning: inconsistencyWarning
       };
     } catch (error) {
       this.logger.error(`[Collector] Phase1 failed for ${address}: ${error.message}`);
