@@ -95,10 +95,6 @@ class RetryHandler {
 class PolymarketCollector {
   constructor(options = {}) {
     this.baseUrl = options.baseUrl || 'https://data-api.polymarket.com';
-    this.windowDays = options.windowDays || 90; // Default 90 days
-    this.maxActivityPages = options.maxActivityPages || 5; // Default 5 pages = 2500 records
-    this.minTradesForStop = options.minTradesForStop || 200; // Early stop: trades >= 200
-    this.minVolumeForStop = options.minVolumeForStop || 10000; // Early stop: volume >= $10,000
     this.rateLimiters = {
       trades: new RateLimiter(RATE_LIMITS.trades.maxRequests, RATE_LIMITS.trades.windowMs),
       positions: new RateLimiter(RATE_LIMITS.positions.maxRequests, RATE_LIMITS.positions.windowMs),
@@ -107,16 +103,6 @@ class PolymarketCollector {
     };
     this.retryHandler = new RetryHandler(options.maxRetries || 5, options.retryDelayMs || 1000);
     this.logger = options.logger || console;
-  }
-
-  /**
-   * Get timestamp for window start (e.g., 90 days ago)
-   * @returns {number} - Unix timestamp in seconds
-   */
-  getWindowStartTimestamp() {
-    const now = Math.floor(Date.now() / 1000);
-    const windowSeconds = this.windowDays * 24 * 60 * 60;
-    return now - windowSeconds;
   }
 
   /**
@@ -185,145 +171,80 @@ class PolymarketCollector {
 
   /**
    * Fetch closed positions for a specific address (for strict win rate)
-   * Filters by 90-day window
    * @param {string} address - Trader address (0x...)
    * @param {Object} options - Query options
+   * @param {number} options.windowDays - Filter to last N days (optional)
    * @returns {Array} - Closed position array
    */
   async fetchClosedPositions(address, options = {}) {
     const endpoint = 'closed-positions';
     const rateLimiter = this.rateLimiters.closedPositions;
-    const windowStart = options.after || this.getWindowStartTimestamp();
+    
+    // Calculate timestamp filter if windowDays is specified
+    let timeFilter = null;
+    if (options.windowDays) {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const sinceSeconds = nowSeconds - (options.windowDays * 24 * 60 * 60);
+      timeFilter = sinceSeconds;
+    }
     
     await rateLimiter.acquire();
     
     const result = await this.retryHandler.executeWithRetry(async () => {
       const params = { user: address };
       if (options.limit) params.limit = options.limit;
+      if (timeFilter) params.after = timeFilter;
       
-      this.logger.info(`[Collector] Fetching closed positions for ${address}`);
-      
-      const response = await axios.get(`${this.baseUrl}/${endpoint}`, { params });
-      
-      return response.data;
-    }, `${endpoint}:${address}`);
-    
-    // Filter by 90-day window (using resolvedAt or timestamp field)
-    const filtered = result.filter(p => {
-      const ts = p.resolvedAt || p.timestamp || 0;
-      return ts >= windowStart;
-    });
-    
-    this.logger.info(`[Collector] Got ${filtered.length} closed positions for ${address} (window: ${this.windowDays}d, from ${result.length} total)`);
-    
-    return filtered;
-  }
-
-  /**
-   * Fetch activity for a specific address
-   * Supports pagination for 90-day window
-   * @param {string} address - Trader address (0x...)
-   * @param {Object} options - Query options (limit, before, after, fetchAll)
-   * @returns {Array} - Activity array
-   */
-  async fetchActivity(address, options = {}) {
-    const endpoint = 'activity';
-    const rateLimiter = this.rateLimiters.activity;
-    const windowStart = options.after || this.getWindowStartTimestamp();
-    
-    // If fetchAll is true, paginate to get all records within window
-    if (options.fetchAll) {
-      return await this._fetchAllActivity(address, windowStart, options.limit);
-    }
-    
-    await rateLimiter.acquire();
-    
-    const result = await this.retryHandler.executeWithRetry(async () => {
-      const params = { user: address, after: windowStart };
-      if (options.limit) params.limit = options.limit;
-      if (options.before) params.before = options.before;
-      
-      this.logger.info(`[Collector] Fetching activity for ${address} (after: ${windowStart})`);
+      this.logger.info(`[Collector] Fetching closed positions for ${address}${timeFilter ? ` (last ${options.windowDays}d)` : ''}`);
       
       const response = await axios.get(`${this.baseUrl}/${endpoint}`, { params });
       
       return response.data;
     }, `${endpoint}:${address}`);
     
-    this.logger.info(`[Collector] Got ${result.length} activity records for ${address}`);
+    this.logger.info(`[Collector] Got ${result.length} closed positions for ${address}${timeFilter ? ` (filtered to last ${options.windowDays}d)` : ''}`);
     
     return result;
   }
 
   /**
-   * Fetch all activity records within time window (with pagination)
-   * Includes hard limit and early stop conditions for efficiency
-   * @param {string} address - Trader address
-   * @param {number} afterTimestamp - Unix timestamp for window start
-   * @param {number} batchSize - Number of records per request
-   * @returns {Array} - All activity records
+   * Fetch activity for a specific address
+   * @param {string} address - Trader address (0x...)
+   * @param {Object} options - Query options (limit, before, after, windowDays)
+   * @param {number} options.windowDays - Filter to last N days (optional)
+   * @returns {Array} - Activity array
    */
-  async _fetchAllActivity(address, afterTimestamp, batchSize = 500) {
-    const allActivity = [];
-    let before = null;
-    let iteration = 0;
-    let totalVolume = 0;
-    let totalTrades = 0;
+  async fetchActivity(address, options = {}) {
+    const endpoint = 'activity';
+    const rateLimiter = this.rateLimiters.activity;
     
-    this.logger.info(`[Collector] Fetching activity for ${address} (after: ${afterTimestamp}, maxPages: ${this.maxActivityPages})`);
-    
-    while (iteration < this.maxActivityPages) {
-      await this.rateLimiters.activity.acquire();
-      
-      const result = await this.retryHandler.executeWithRetry(async () => {
-        const params = { 
-          user: address, 
-          after: afterTimestamp,
-          limit: batchSize 
-        };
-        if (before) params.before = before;
-        
-        const response = await axios.get(`${this.baseUrl}/activity`, { params });
-        return response.data;
-      }, `activity:${address}:page${iteration}`);
-      
-      if (!result || result.length === 0) break;
-      
-      allActivity.push(...result);
-      
-      // Accumulate metrics for early stop
-      totalTrades += result.length;
-      totalVolume += result.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
-      
-      // Early stop conditions
-      if (totalTrades >= this.minTradesForStop) {
-        this.logger.info(`[Collector] Early stop: trades=${totalTrades} >= ${this.minTradesForStop}`);
-        break;
-      }
-      if (totalVolume >= this.minVolumeForStop) {
-        this.logger.info(`[Collector] Early stop: volume=$${totalVolume.toFixed(2)} >= $${this.minVolumeForStop}`);
-        break;
-      }
-      
-      // Get the earliest timestamp from results for next page
-      const timestamps = result.map(a => a.timestamp).filter(t => t);
-      if (timestamps.length === 0) break;
-      
-      const earliestTimestamp = Math.min(...timestamps);
-      if (earliestTimestamp <= afterTimestamp) break;
-      
-      before = earliestTimestamp;
-      iteration++;
-      
-      this.logger.info(`[Collector] Activity page ${iteration}: ${result.length} records, total: ${allActivity.length}, volume: $${totalVolume.toFixed(2)}`);
+    // Calculate timestamp filter if windowDays is specified
+    let timeFilter = null;
+    if (options.windowDays) {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const sinceSeconds = nowSeconds - (options.windowDays * 24 * 60 * 60);
+      timeFilter = sinceSeconds;
     }
     
-    // Filter by window (in case API returns slightly out-of-window records)
-    const filtered = allActivity.filter(a => !a.timestamp || a.timestamp >= afterTimestamp);
+    await rateLimiter.acquire();
     
-    this.logger.info(`[Collector] Total activity for ${address}: ${filtered.length} records (window: ${this.windowDays}d)`);
+    const result = await this.retryHandler.executeWithRetry(async () => {
+      const params = { user: address };
+      if (options.limit) params.limit = options.limit;
+      if (options.before) params.before = options.before;
+      if (options.after) params.after = options.after;
+      if (timeFilter) params.after = timeFilter;
+      
+      this.logger.info(`[Collector] Fetching activity for ${address}${timeFilter ? ` (last ${options.windowDays}d)` : ''}`);
+      
+      const response = await axios.get(`${this.baseUrl}/${endpoint}`, { params });
+      
+      return response.data;
+    }, `${endpoint}:${address}`);
     
-    return filtered;
+    this.logger.info(`[Collector] Got ${result.length} activity records for ${address}${timeFilter ? ` (filtered to last ${options.windowDays}d)` : ''}`);
+    
+    return result;
   }
 
   /**
@@ -360,22 +281,154 @@ class PolymarketCollector {
   }
 
   /**
+   * Phase 1: Lightweight metrics for initial screening
+   * Only fetches closed-positions to calculate winRate90d + realizedPnl90d
+   * @param {string} address - Trader address
+   * @param {Object} options - Options including windowDays
+   * @returns {Object} - Basic metrics: winRate90d, realizedPnl90d, confidenceScore
+   */
+  async fetchBasic90dMetrics(address, options = {}) {
+    const windowDays = options.windowDays || 90;
+    this.logger.info(`[Collector] Phase1 lightweight metrics for ${address} (last ${windowDays}d)`);
+    
+    try {
+      const closedPositions = await this.fetchClosedPositions(address, { windowDays });
+      
+      // Calculate win rate and PnL from closed positions only
+      const wins = closedPositions.filter(p => p.realizedPnl > 0).length;
+      const losses = closedPositions.filter(p => p.realizedPnl < 0).length;
+      const totalClosed = wins + losses;
+      
+      const strictWinRate = totalClosed > 0 ? wins / totalClosed : null;
+      const realizedPnl = closedPositions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
+      
+      this.logger.info(`[Collector] Phase1 complete for ${address}: winRate=${strictWinRate}, pnl=${realizedPnl}`);
+      
+      return {
+        address,
+        strictWinRate,
+        realizedPnl,
+        confidenceScore: 0,  // Will be updated in phase2
+        totalTrades: totalClosed,
+        totalVolumeUsd: 0,   // Will be updated in phase2
+        _phase: 1,
+        _closedPositionsCount: closedPositions.length
+      };
+    } catch (error) {
+      this.logger.error(`[Collector] Phase1 failed for ${address}: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Phase 2: Enrich candidate with activity data
+   * Only called for addresses that passed Phase 1
+   * @param {string} address - Trader address
+   * @param {Object} options - Options including windowDays, maxActivityPages
+   * @returns {Object} - Complete metrics with volume/trades
+   */
+  async enrichWithActivity(address, basicMetrics, options = {}) {
+    const windowDays = options.windowDays || 90;
+    const maxActivityPages = options.maxActivityPages || 5;
+    
+    this.logger.info(`[Collector] Phase2 enriching ${address}`);
+    
+    try {
+      // Fetch activity with pagination limits (P0 optimization)
+      const activity = await this.fetchActivityWithPagination(address, {
+        windowDays,
+        maxPages: maxActivityPages
+      });
+      
+      const totalVolumeUsd = activity.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
+      const totalTrades = activity.length;
+      
+      // Merge with basic metrics from Phase1
+      return {
+        ...basicMetrics,
+        totalVolumeUsd,
+        totalTrades,
+        activityCount: activity.length,
+        _phase: 2
+      };
+    } catch (error) {
+      this.logger.error(`[Collector] Phase2 failed for ${address}: ${error.message}`);
+      // Return basic metrics if enrichment fails
+      return {
+        ...basicMetrics,
+        _phase: 2,
+        _enrichmentFailed: true
+      };
+    }
+  }
+  
+  /**
+   * Fetch activity with pagination limit (P0 optimization)
+   */
+  async fetchActivityWithPagination(address, options = {}) {
+    const windowDays = options.windowDays || 90;
+    const maxPages = options.maxPages || 5;
+    const pageSize = 100;
+    
+    let allActivity = [];
+    let cursor = '';
+    
+    for (let page = 0; page < maxPages; page++) {
+      await this.rateLimiters.activity.acquire();
+      
+      try {
+        const params = { user: address, limit: pageSize };
+        if (cursor) params.cursor = cursor;
+        
+        // Add time filter
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const sinceSeconds = nowSeconds - (windowDays * 24 * 60 * 60);
+        params.after = sinceSeconds;
+        
+        const response = await axios.get(`${this.baseUrl}/activity`, { params });
+        const data = response.data;
+        
+        if (!data || data.length === 0) break;
+        
+        allActivity = allActivity.concat(data);
+        cursor = data.next_cursor || '';
+        
+        if (!cursor) break;
+      } catch (error) {
+        break;
+      }
+      
+      // Early stop conditions (P0 optimization)
+      if (allActivity.length >= 200) {
+        this.logger.info(`[Collector] Early stop: trades=${allActivity.length} >= 200`);
+        break;
+      }
+      const totalVolume = allActivity.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
+      if (totalVolume >= 10000) {
+        this.logger.info(`[Collector] Early stop: volume=${totalVolume} >= 10000`);
+        break;
+      }
+    }
+    
+    return allActivity;
+  }
+  
+  /**
    * Fetch complete metrics for an address
    * Uses Promise.allSettled to support partial success
-   * Calculates both original and 90-day window metrics
    * @param {string} address - Trader address
+   * @param {Object} options - Options including windowDays for time filtering
    * @returns {Object} - Complete metrics (may have partial data)
    */
-  async fetchAccountMetrics(address) {
-    this.logger.info(`[Collector] Fetching complete metrics for ${address} (window: ${this.windowDays}d)`);
-    
-    const windowStart = this.getWindowStartTimestamp();
+  async fetchAccountMetrics(address, options = {}) {
+    const windowDays = options.windowDays || null;
+    this.logger.info(`[Collector] Fetching complete metrics for ${address}${windowDays ? ` (last ${windowDays}d)` : ''}`);
     
     // Use Promise.allSettled to support partial success
     const results = await Promise.allSettled([
       this.fetchPositions(address),
-      this.fetchClosedPositions(address),
-      this.fetchActivity(address, { after: windowStart, fetchAll: true })
+      this.fetchClosedPositions(address, { windowDays }),
+      this.fetchActivity(address, { limit: 100, windowDays })
     ]);
     
     // Extract results, handling partial failures
@@ -391,8 +444,8 @@ class PolymarketCollector {
       }
     });
     
-    // Calculate metrics with 90-day window
-    const metrics = this.calculateMetrics(address, positions, closedPositions, activity, windowStart);
+    // Calculate metrics
+    const metrics = this.calculateMetrics(address, positions, closedPositions, activity);
     
     // Add partial success flag
     metrics._partialSuccess = results.some(r => r.status === 'rejected');
@@ -400,11 +453,7 @@ class PolymarketCollector {
       .map((r, i) => r.status === 'rejected' ? ['positions', 'closedPositions', 'activity'][i] : null)
       .filter(Boolean);
     
-    // Add window info
-    metrics.windowDays = this.windowDays;
-    metrics.windowStart = windowStart;
-    
-    this.logger.info(`[Collector] Metrics calculated for ${address}: winRate90d=${metrics.winRate90d}, volume90d=${metrics.volume90d}`);
+    this.logger.info(`[Collector] Metrics calculated for ${address}: winRate=${metrics.strictWinRate}, volume=${metrics.totalVolumeUsd}`);
     
     return metrics;
   }
@@ -416,40 +465,21 @@ class PolymarketCollector {
    * - realizedPnl > 0 = WIN
    * - realizedPnl < 0 = LOSS  
    * - realizedPnl == 0 = NEUTRAL (not counted in numerator or denominator)
-   * 
-   * For 90-day window:
-   * - closedPositions are already filtered by 90-day window
-   * - activity is already filtered by 90-day window
    */
-  calculateMetrics(address, positions, closedPositions, activity, windowStart = null) {
-    // ========== 90-day metrics (using filtered data) ==========
-    // From closed positions - strict win rate (90d)
-    const wins90d = closedPositions.filter(p => p.realizedPnl > 0).length;
-    const losses90d = closedPositions.filter(p => p.realizedPnl < 0).length;
-    const totalClosed90d = wins90d + losses90d;  // Exclude neutral
-    
-    const winRate90d = totalClosed90d > 0 ? wins90d / totalClosed90d : null;
-    
-    // From activity - total volume (90d) - already filtered
-    const volume90d = activity.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
-    const trades90d = activity.length;
-    
-    // From closed positions - realized PnL (90d)
-    const realizedPnl90d = closedPositions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
-    
-    // ========== Original metrics (for backward compatibility) ==========
+  calculateMetrics(address, positions, closedPositions, activity) {
     // From closed positions - strict win rate
+    // Exclude neutral (realizedPnl == 0) from calculation
     const wins = closedPositions.filter(p => p.realizedPnl > 0).length;
     const losses = closedPositions.filter(p => p.realizedPnl < 0).length;
     const neutral = closedPositions.filter(p => p.realizedPnl === 0).length;
-    const totalClosed = wins + losses;
+    const totalClosed = wins + losses;  // Exclude neutral from denominator
     
     const strictWinRate = totalClosed > 0 ? wins / totalClosed : null;
     const confidenceScore = positions.length > 0 ? totalClosed / positions.length : 0;
     
-    // From activity - total volume (same as 90d since data is filtered)
-    const totalVolumeUsd = volume90d;
-    const totalTrades = trades90d;
+    // From activity - total volume
+    const totalVolumeUsd = activity.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
+    const totalTrades = activity.length;
     
     // From positions - realized PnL
     const realizedPnl = positions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
@@ -460,7 +490,6 @@ class PolymarketCollector {
     
     return {
       address,
-      // Original metrics (backward compatible)
       totalTrades,
       totalVolumeUsd,
       realizedPnl,
@@ -472,16 +501,6 @@ class PolymarketCollector {
       closedPositions: totalClosed,
       positionsCount: positions.length,
       activityCount: activity.length,
-      
-      // 90-day window metrics (NEW)
-      winRate90d,
-      volume90d,
-      trades90d,
-      realizedPnl90d,
-      winCount90d: wins90d,
-      lossCount90d: losses90d,
-      closedPositions90d: totalClosed90d,
-      
       // Raw data for debugging
       _positions: positions,
       _closedPositions: closedPositions,

@@ -40,23 +40,20 @@ Usage: npm run sync -- [options]
 Options:
   --min-trades <n>       Minimum trade count (default: 50)
   --min-volume <v>       Minimum volume in USD (default: 5000)
-  --min-winrate <r>      Minimum win rate 0-1 (default: 0.8)
+  --min-winrate <r>      Minimum win rate 0-1 (default: 0.58)
   --min-confidence <r>   Minimum confidence score (default: 0.1)
-  --require-profit       Only select profitable accounts (realizedPnl > 0)
   --top-n <n>            Number of top accounts to select (default: 100)
   --discover <n>         Discover N traders from trades (default: 100)
-  --window-days <n>      Time window in days (default: 90)
-  --max-activity-pages <n> Max pages to fetch per address (default: 5)
   --seed-file <path>     Load additional seed addresses from file
   --help, -h             Show this help message
 
 Examples:
   npm run sync
-  npm run sync -- --discover 500 --min-winrate 0.8 --require-profit
-  npm run sync -- --window-days 30 --min-volume 1000 --max-activity-pages 3
+  npm run sync -- --discover 500 --min-winrate 0.6
+  npm run sync -- --seed-file ./seed-addresses.txt
 
 Environment variables (see .env.example):
-  MIN_TRADES, MIN_VOLUME_USD, MIN_WIN_RATE, MIN_CONFIDENCE, TOP_N, DISCOVER_TRADERS, WINDOW_DAYS, MAX_ACTIVITY_PAGES
+  MIN_TRADES, MIN_VOLUME_USD, MIN_WIN_RATE, MIN_CONFIDENCE, TOP_N, DISCOVER_TRADERS
 `);
   process.exit(0);
 }
@@ -66,13 +63,13 @@ function parseArgs() {
   const config = {
     minTrades: parseInt(process.env.MIN_TRADES || '50'),
     minVolumeUsd: parseFloat(process.env.MIN_VOLUME_USD || '5000'),
-    minWinRate: parseFloat(process.env.MIN_WIN_RATE || '0.8'),
+    minWinRate: parseFloat(process.env.MIN_WIN_RATE || '0.58'),
     minConfidence: parseFloat(process.env.MIN_CONFIDENCE || '0.1'),
     minPnl: parseFloat(process.env.MIN_PNL || '0'),
     topN: parseInt(process.env.TOP_N || '100'),
     seedFile: null,
     discoverTraders: parseInt(process.env.DISCOVER_TRADERS || '100'),
-    windowDays: parseInt(process.env.WINDOW_DAYS || '90'),
+    windowDays: parseInt(process.env.WINDOW_DAYS || '0') || null,
     maxActivityPages: parseInt(process.env.MAX_ACTIVITY_PAGES || '5')
   };
   
@@ -94,9 +91,6 @@ function parseArgs() {
       case '--min-confidence':
         config.minConfidence = parseFloat(args[++i]);
         break;
-      case '--min-pnl':
-        config.minPnl = parseFloat(args[++i]);
-        break;
       case '--top-n':
         config.topN = parseInt(args[++i]);
         break;
@@ -108,6 +102,9 @@ function parseArgs() {
         break;
       case '--window-days':
         config.windowDays = parseInt(args[++i]);
+        break;
+      case '--min-pnl':
+        config.minPnl = parseFloat(args[++i]);
         break;
       case '--max-activity-pages':
         config.maxActivityPages = parseInt(args[++i]);
@@ -156,9 +153,7 @@ async function main() {
   const collector = new PolymarketCollector({
     logger: console,
     maxRetries: 3,
-    retryDelayMs: 500,
-    windowDays: config.windowDays,
-    maxActivityPages: config.maxActivityPages
+    retryDelayMs: 500
   });
   
   const scorer = new AccountScorer({
@@ -173,8 +168,7 @@ async function main() {
     minWinRate: config.minWinRate,
     minConfidence: config.minConfidence,
     minPnl: config.minPnl,
-    topN: config.topN,
-    use90dMetrics: true
+    topN: config.topN
   });
   
   const storage = new Storage({
@@ -202,29 +196,65 @@ async function main() {
       console.log(`[Runner] Total addresses to process: ${addresses.length}`);
     }
     
-    // Step 4: Collect metrics for each address
-    console.log('[Runner] Collecting metrics for addresses...');
+    // Step 4: Two-phase collection
+    const windowDays = config.windowDays;
+    const maxActivityPages = config.maxActivityPages || 5;
+    console.log(`[Runner] Starting two-phase collection${windowDays ? ` (last ${windowDays} days)` : ''}...`);
+    
     const metricsResults = [];
+    const phase1Candidates = addresses.length;
+    let phase1Passed = 0;
+    let phase2Enriched = 0;
+    
+    // Phase 1: Lightweight screening (closed-positions only)
+    console.log(`[Runner] Phase1: Lightweight screening (${addresses.length} candidates)...`);
+    const phase1Results = [];
     
     for (const address of addresses) {
       try {
-        const metrics = await collector.fetchAccountMetrics(address);
-        metricsResults.push(metrics);
-        
-        if (metrics._partialSuccess) {
-          console.log(`[Runner] Partial success for ${address}: missing ${metrics._failedEndpoints.join(', ')}`);
-        }
+        const basicMetrics = await collector.fetchBasic90dMetrics(address, { windowDays });
+        phase1Results.push({ address, metrics: basicMetrics });
       } catch (error) {
-        errors.push({
-          address,
-          type: 'api_failure',
-          message: error.message
-        });
-        console.error(`[Runner] Failed to fetch metrics for ${address}: ${error.message}`);
+        errors.push({ address, type: 'phase1_failure', message: error.message });
       }
     }
     
-    console.log(`[Runner] Collected metrics for ${metricsResults.length} accounts (${errors.length} failed)`);
+    // Phase 1 filter: winRate >= minWinRate AND realizedPnl >= minPnl
+    const phase1PassList = phase1Results.filter(r => {
+      const m = r.metrics;
+      const winRate = m.strictWinRate ?? 0;
+      const passes = winRate >= config.minWinRate && m.realizedPnl >= config.minPnl;
+      if (passes) phase1Passed++;
+      return passes;
+    });
+    
+    console.log(`[Runner] Phase1: ${phase1Passed}/${phase1Candidates} passed (winRate>=${config.minWinRate}, pnl>=${config.minPnl})`);
+    
+    // Phase 2: Enrich with activity (only for Phase1 passed)
+    console.log(`[Runner] Phase2: Enriching ${phase1PassList.length} candidates with activity...`);
+    
+    for (const item of phase1PassList) {
+      try {
+        const enrichedMetrics = await collector.enrichWithActivity(item.address, item.metrics, {
+          windowDays,
+          maxActivityPages
+        });
+        
+        // Calculate confidence score from closed positions
+        enrichedMetrics.confidenceScore = enrichedMetrics._closedPositionsCount > 0 
+          ? enrichedMetrics.totalTrades / enrichedMetrics._closedPositionsCount 
+          : 0;
+        
+        metricsResults.push(enrichedMetrics);
+        phase2Enriched++;
+      } catch (error) {
+        // If phase2 fails, use phase1 data
+        metricsResults.push(item.metrics);
+        errors.push({ address: item.address, type: 'phase2_failure', message: error.message });
+      }
+    }
+    
+    console.log(`[Runner] Phase2: ${phase2Enriched} enriched, ${metricsResults.length} total accounts (${errors.length} failed)`);
     
     // Step 5: Score accounts
     console.log('[Runner] Scoring accounts...');

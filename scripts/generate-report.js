@@ -61,9 +61,9 @@ async function generateReport(runId) {
       ? selectedAccounts.reduce((sum, a) => sum + (a.total_volume_usd || 0), 0) / selectedAccounts.length
       : 0;
     const avgScore = selectedAccounts.length > 0
-      ? selectedAccounts.reduce((sum, a) => sum + (a.selection_score || 0), 0) / selectedAccounts.length
+      ? selectedAccounts.reduce((sum, a) => sum + (Number(a.selection_score) || 0), 0) / selectedAccounts.length
       : 0;
-    const topScore = selectedAccounts.length > 0 ? selectedAccounts[0].selection_score : null;
+    const topScore = selectedAccounts.length > 0 ? Number(selectedAccounts[0].selection_score) : null;
     
     // Calculate duration
     const duration = run.completed_at && run.started_at
