@@ -281,6 +281,139 @@ class PolymarketCollector {
   }
 
   /**
+   * Phase 1: Lightweight metrics for initial screening
+   * Only fetches closed-positions to calculate winRate90d + realizedPnl90d
+   * @param {string} address - Trader address
+   * @param {Object} options - Options including windowDays
+   * @returns {Object} - Basic metrics: winRate90d, realizedPnl90d, confidenceScore
+   */
+  async fetchBasic90dMetrics(address, options = {}) {
+    const windowDays = options.windowDays || 90;
+    this.logger.info(`[Collector] Phase1 lightweight metrics for ${address} (last ${windowDays}d)`);
+    
+    try {
+      const closedPositions = await this.fetchClosedPositions(address, { windowDays });
+      
+      // Calculate win rate and PnL from closed positions only
+      const wins = closedPositions.filter(p => p.realizedPnl > 0).length;
+      const losses = closedPositions.filter(p => p.realizedPnl < 0).length;
+      const totalClosed = wins + losses;
+      
+      const strictWinRate = totalClosed > 0 ? wins / totalClosed : null;
+      const realizedPnl = closedPositions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
+      
+      this.logger.info(`[Collector] Phase1 complete for ${address}: winRate=${strictWinRate}, pnl=${realizedPnl}`);
+      
+      return {
+        address,
+        strictWinRate,
+        realizedPnl,
+        confidenceScore: 0,  // Will be updated in phase2
+        totalTrades: totalClosed,
+        totalVolumeUsd: 0,   // Will be updated in phase2
+        _phase: 1,
+        _closedPositionsCount: closedPositions.length
+      };
+    } catch (error) {
+      this.logger.error(`[Collector] Phase1 failed for ${address}: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Phase 2: Enrich candidate with activity data
+   * Only called for addresses that passed Phase 1
+   * @param {string} address - Trader address
+   * @param {Object} options - Options including windowDays, maxActivityPages
+   * @returns {Object} - Complete metrics with volume/trades
+   */
+  async enrichWithActivity(address, basicMetrics, options = {}) {
+    const windowDays = options.windowDays || 90;
+    const maxActivityPages = options.maxActivityPages || 5;
+    
+    this.logger.info(`[Collector] Phase2 enriching ${address}`);
+    
+    try {
+      // Fetch activity with pagination limits (P0 optimization)
+      const activity = await this.fetchActivityWithPagination(address, {
+        windowDays,
+        maxPages: maxActivityPages
+      });
+      
+      const totalVolumeUsd = activity.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
+      const totalTrades = activity.length;
+      
+      // Merge with basic metrics from Phase1
+      return {
+        ...basicMetrics,
+        totalVolumeUsd,
+        totalTrades,
+        activityCount: activity.length,
+        _phase: 2
+      };
+    } catch (error) {
+      this.logger.error(`[Collector] Phase2 failed for ${address}: ${error.message}`);
+      // Return basic metrics if enrichment fails
+      return {
+        ...basicMetrics,
+        _phase: 2,
+        _enrichmentFailed: true
+      };
+    }
+  }
+  
+  /**
+   * Fetch activity with pagination limit (P0 optimization)
+   */
+  async fetchActivityWithPagination(address, options = {}) {
+    const windowDays = options.windowDays || 90;
+    const maxPages = options.maxPages || 5;
+    const pageSize = 100;
+    
+    let allActivity = [];
+    let cursor = '';
+    
+    for (let page = 0; page < maxPages; page++) {
+      await this.rateLimiters.activity.acquire();
+      
+      try {
+        const params = { user: address, limit: pageSize };
+        if (cursor) params.cursor = cursor;
+        
+        // Add time filter
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const sinceSeconds = nowSeconds - (windowDays * 24 * 60 * 60);
+        params.after = sinceSeconds;
+        
+        const response = await axios.get(`${this.baseUrl}/activity`, { params });
+        const data = response.data;
+        
+        if (!data || data.length === 0) break;
+        
+        allActivity = allActivity.concat(data);
+        cursor = data.next_cursor || '';
+        
+        if (!cursor) break;
+      } catch (error) {
+        break;
+      }
+      
+      // Early stop conditions (P0 optimization)
+      if (allActivity.length >= 200) {
+        this.logger.info(`[Collector] Early stop: trades=${allActivity.length} >= 200`);
+        break;
+      }
+      const totalVolume = allActivity.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
+      if (totalVolume >= 10000) {
+        this.logger.info(`[Collector] Early stop: volume=${totalVolume} >= 10000`);
+        break;
+      }
+    }
+    
+    return allActivity;
+  }
+  
+  /**
    * Fetch complete metrics for an address
    * Uses Promise.allSettled to support partial success
    * @param {string} address - Trader address

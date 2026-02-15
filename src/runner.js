@@ -69,7 +69,8 @@ function parseArgs() {
     topN: parseInt(process.env.TOP_N || '100'),
     seedFile: null,
     discoverTraders: parseInt(process.env.DISCOVER_TRADERS || '100'),
-    windowDays: parseInt(process.env.WINDOW_DAYS || '0') || null
+    windowDays: parseInt(process.env.WINDOW_DAYS || '0') || null,
+    maxActivityPages: parseInt(process.env.MAX_ACTIVITY_PAGES || '5')
   };
   
   for (let i = 0; i < args.length; i++) {
@@ -104,6 +105,9 @@ function parseArgs() {
         break;
       case '--min-pnl':
         config.minPnl = parseFloat(args[++i]);
+        break;
+      case '--max-activity-pages':
+        config.maxActivityPages = parseInt(args[++i]);
         break;
     }
   }
@@ -192,30 +196,65 @@ async function main() {
       console.log(`[Runner] Total addresses to process: ${addresses.length}`);
     }
     
-    // Step 4: Collect metrics for each address
+    // Step 4: Two-phase collection
     const windowDays = config.windowDays;
-    console.log(`[Runner] Collecting metrics for addresses${windowDays ? ` (last ${windowDays} days)` : ''}...`);
+    const maxActivityPages = config.maxActivityPages || 5;
+    console.log(`[Runner] Starting two-phase collection${windowDays ? ` (last ${windowDays} days)` : ''}...`);
+    
     const metricsResults = [];
+    const phase1Candidates = addresses.length;
+    let phase1Passed = 0;
+    let phase2Enriched = 0;
+    
+    // Phase 1: Lightweight screening (closed-positions only)
+    console.log(`[Runner] Phase1: Lightweight screening (${addresses.length} candidates)...`);
+    const phase1Results = [];
     
     for (const address of addresses) {
       try {
-        const metrics = await collector.fetchAccountMetrics(address, { windowDays });
-        metricsResults.push(metrics);
-        
-        if (metrics._partialSuccess) {
-          console.log(`[Runner] Partial success for ${address}: missing ${metrics._failedEndpoints.join(', ')}`);
-        }
+        const basicMetrics = await collector.fetchBasic90dMetrics(address, { windowDays });
+        phase1Results.push({ address, metrics: basicMetrics });
       } catch (error) {
-        errors.push({
-          address,
-          type: 'api_failure',
-          message: error.message
-        });
-        console.error(`[Runner] Failed to fetch metrics for ${address}: ${error.message}`);
+        errors.push({ address, type: 'phase1_failure', message: error.message });
       }
     }
     
-    console.log(`[Runner] Collected metrics for ${metricsResults.length} accounts (${errors.length} failed)`);
+    // Phase 1 filter: winRate >= minWinRate AND realizedPnl >= minPnl
+    const phase1PassList = phase1Results.filter(r => {
+      const m = r.metrics;
+      const winRate = m.strictWinRate ?? 0;
+      const passes = winRate >= config.minWinRate && m.realizedPnl >= config.minPnl;
+      if (passes) phase1Passed++;
+      return passes;
+    });
+    
+    console.log(`[Runner] Phase1: ${phase1Passed}/${phase1Candidates} passed (winRate>=${config.minWinRate}, pnl>=${config.minPnl})`);
+    
+    // Phase 2: Enrich with activity (only for Phase1 passed)
+    console.log(`[Runner] Phase2: Enriching ${phase1PassList.length} candidates with activity...`);
+    
+    for (const item of phase1PassList) {
+      try {
+        const enrichedMetrics = await collector.enrichWithActivity(item.address, item.metrics, {
+          windowDays,
+          maxActivityPages
+        });
+        
+        // Calculate confidence score from closed positions
+        enrichedMetrics.confidenceScore = enrichedMetrics._closedPositionsCount > 0 
+          ? enrichedMetrics.totalTrades / enrichedMetrics._closedPositionsCount 
+          : 0;
+        
+        metricsResults.push(enrichedMetrics);
+        phase2Enriched++;
+      } catch (error) {
+        // If phase2 fails, use phase1 data
+        metricsResults.push(item.metrics);
+        errors.push({ address: item.address, type: 'phase2_failure', message: error.message });
+      }
+    }
+    
+    console.log(`[Runner] Phase2: ${phase2Enriched} enriched, ${metricsResults.length} total accounts (${errors.length} failed)`);
     
     // Step 5: Score accounts
     console.log('[Runner] Scoring accounts...');
