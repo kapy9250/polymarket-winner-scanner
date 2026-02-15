@@ -481,8 +481,14 @@ class PolymarketCollector {
     const totalVolumeUsd = activity.reduce((sum, a) => sum + (a.usdcSize || 0), 0);
     const totalTrades = activity.length;
     
-    // From positions - realized PnL
-    const realizedPnl = positions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
+    // From positions - realized PnL and cash PnL (unrealized)
+    const positionsRealizedPnl = positions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
+    const cashPnl = positions.reduce((sum, p) => sum + (p.cashPnl || 0), 0);
+    
+    // Total PnL = realized (from closed + positions) + cash PnL (unrealized)
+    // This gives the true account profitability
+    const realizedPnl = closedPositions.reduce((sum, p) => sum + (p.realizedPnl || 0), 0) + positionsRealizedPnl;
+    const totalPnl = realizedPnl + cashPnl;
     
     // Proxy win rate from current positions
     const proxyWins = positions.filter(p => p.cashPnl > 0).length;
@@ -493,6 +499,8 @@ class PolymarketCollector {
       totalTrades,
       totalVolumeUsd,
       realizedPnl,
+      cashPnl,
+      totalPnl,
       strictWinRate,
       proxyWinRate,
       confidenceScore,

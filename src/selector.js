@@ -41,8 +41,8 @@ class AccountSelector {
       // This prevents accounts with no win rate data from passing when minWinRate > 0
       const passesWinRate = winRate !== null && winRate >= this.minWinRate;
       
-      // PnL filter: require profitable (or at least minPnl threshold)
-      const passesPnl = (account.realizedPnl ?? 0) >= this.minPnl;
+      // PnL filter: use totalPnl (realized + cash) for accurate profitability
+      const passesPnl = (account.totalPnl ?? account.realizedPnl ?? 0) >= this.minPnl;
       
       return (
         account.totalTrades >= this.minTrades &&
