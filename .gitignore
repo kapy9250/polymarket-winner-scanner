@@ -1,5 +1,27 @@
-node_modules/
-.env
-.env.*
-coverage/
-reports/
+# OpenClaw agent repo: track only agent config/prompt assets
+# Ignore everything by default
+*
+
+# Keep gitignore itself
+!/.gitignore
+
+# Keep top-level markdown (SOUL/AGENTS/USER/TOOLS/etc.)
+!/*.md
+
+# Keep memory and skills
+!memory/
+!memory/**
+!skills/
+!skills/**
+
+# Keep common OpenClaw config/prompt directories (if used)
+!config/
+!config/**
+!prompts/
+!prompts/**
+!.openclaw/
+!.openclaw/**
+
+# Never commit secrets
+.secrets/
+TOOLS_CREDENTIALS.local.md
